@@ -1,0 +1,43 @@
+#The script to get device names and storage space details from Intune
+$tenantId = "" #the Azure AD tenant ID in which the Data Collection Endpoint resides
+$appId = "" #the app ID created and granted permissions
+$appSecret = "" #the secret created for the above app - never store your secrets in the source code
+
+# Function to get the bearer token
+$body = @{
+    client_id     = $appId
+    scope         = "https://graph.microsoft.com/.default"
+    client_secret = $appSecret
+    grant_type    = "client_credentials"
+}
+$tokenUri = "https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token"
+$headers = @{"Content-Type" = "application/x-www-form-urlencoded"}
+$bearerToken = (Invoke-RestMethod -Uri $tokenUri -Method Post -Body $body -Headers $headers).access_token
+
+# Graph API request headers with the token
+$graphHeaders = @{
+    "Authorization" = "Bearer $bearerToken"
+    "Content-Type"  = "application/json"
+}
+
+$allDevices = @()
+$nextPageUrl = "https://graph.microsoft.com/beta/deviceManagement/managedDevices?$select=deviceName,freeStorageSpaceInBytes,totalStorageSpaceInBytes"
+
+do {
+    $response = Invoke-RestMethod -Uri $nextPageUrl -Headers $graphHeaders
+
+    # Add the current page of devices to the collection
+    $allDevices += $response.value
+
+    # Check if there's a next page
+    $nextPageUrl = $response.'@odata.nextLink'
+} while ($nextPageUrl -ne $null)
+
+# Format free and total storage space in GB for readability
+$allDevices | ForEach-Object {
+    [pscustomobject]@{
+        DeviceName          = $_.deviceName
+        FreeDiskSpaceGB     = [math]::Round($_.freeStorageSpaceInBytes / 1GB, 2)
+        TotalDiskSpaceGB    = [math]::Round($_.totalStorageSpaceInBytes / 1GB, 2)
+    }
+} | Export-Csv -Path "C:\reports\device_storage_space.csv" -NoTypeInformation
