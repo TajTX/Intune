@@ -1,0 +1,60 @@
+#Script to assign apps to a specific group of devices in Intune. 
+$tenantId = "" #the tenant ID in which the Data Collection Endpoint resides
+$appId = "" #the app ID created and granted permissions
+$appSecret = "" #the secret created for the above app - never store your secrets in the source code
+
+$groupId = "<Target-Group-ID>"
+$appIds = @("<App-ID-1>", "<App-ID-2>", "<App-ID-3>")  # List of Application IDs to assign
+
+# Function to get the bearer token
+$body = @{
+    client_id     = $appId
+    scope         = "https://graph.microsoft.com/.default"
+    client_secret = $appSecret
+    grant_type    = "client_credentials"
+}
+$tokenUri = "https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token"
+$headers = @{"Content-Type" = "application/x-www-form-urlencoded"}
+$bearerToken = (Invoke-RestMethod -Uri $tokenUri -Method Post -Body $body -Headers $headers).access_token
+
+# Graph API request headers with the token
+$graphHeaders = @{
+    "Authorization" = "Bearer $bearerToken"
+    "Content-Type"  = "application/json"
+}
+
+
+# Function to assign an app to a group
+function Assign-AppToGroup {
+    param (
+        [string]$appId,
+        [string]$groupId
+    )
+
+    # Endpoint for app assignment
+    $uri = "https://graph.microsoft.com/v1.0/deviceAppManagement/mobileApps/$appId/assignments"
+
+    # Assignment body
+    $assignment = @{
+        "@odata.type" = "#microsoft.graph.mobileAppAssignment"
+        "intent"      = "available"  # Options include "required", "available", "uninstall"
+        "target"      = @{
+            "@odata.type" = "#microsoft.graph.groupAssignmentTarget"
+            "groupId"     = $groupId
+        }
+    }
+
+    # Post the assignment
+    $response = Invoke-RestMethod -Uri $uri -Headers $graphHeaders -Method Post -Body ($assignment | ConvertTo-Json -Depth 10)
+
+    if ($response) {
+        Write-Output "Assigned app $appId to group $groupId successfully."
+    } else {
+        Write-Output "Failed to assign app $appId to group $groupId."
+    }
+}
+
+# Loop through each app and assign it to the group
+foreach ($appId in $appIds) {
+    Assign-AppToGroup -appId $appId -groupId $groupId
+}
