@@ -1,0 +1,59 @@
+# Script to retrieve a list of devices from Entra ID, verify the presence of BitLocker Recovery Keys, and generate separate lists for devices with and without keys.
+
+# Connect to Microsoft Graph
+Connect-MgGraph -Scopes 'BitlockerKey.Read.All' -NoWelcome
+
+# Get the list of devices
+$allDevices = Get-MgDevice -All
+
+# Filter the list to include only Windows devices
+$windowsDevices = $allDevices | Where-Object { $_.OperatingSystem -like 'Windows*' }
+
+# Initialize arrays to store device information
+$devicesWithKeys = @()
+$devicesWithoutKeys = @()
+
+# Loop through each Windows device
+foreach ($device in $windowsDevices) {
+    $deviceId = $device.deviceId
+    $deviceName = $device.DisplayName
+
+    try {
+        # Get BitLocker recovery keys for the device
+        $recoveryKeys = Get-MgInformationProtectionBitlockerRecoveryKey -Filter "deviceId eq '$deviceId'" -ErrorAction Stop
+
+        if ($recoveryKeys) {
+            foreach ($key in $recoveryKeys) {
+                # Store the device name, recovery key ID, and device ID in the array
+                $devicesWithKeys += [PSCustomObject]@{
+                    DeviceName    = $deviceName
+                    RecoveryKeyId = $key.Id
+                    DeviceId      = $deviceId
+                }
+            }
+        } else {
+            # Store the device name and device ID in the array for devices without keys
+            $devicesWithoutKeys += [PSCustomObject]@{
+                DeviceName = $deviceName
+                DeviceId   = $deviceId
+            }
+        }
+    } catch {
+        # Store the device name and device ID in the array for devices without keys in case of an error
+        $devicesWithoutKeys += [PSCustomObject]@{
+            DeviceName = $deviceName
+            DeviceId   = $deviceId
+        }
+    }
+}
+
+# Output the results
+Write-Host "Devices with BitLocker Recovery Keys:"
+$devicesWithKeys | Format-Table -AutoSize
+
+Write-Host "Devices without BitLocker Recovery Keys:"
+$devicesWithoutKeys | Format-Table -AutoSize
+
+# Optionally, export the results to CSV files
+$devicesWithKeys | Export-Csv -Path "DevicesWithBitLockerRecoveryKeys.csv" -NoTypeInformation
+$devicesWithoutKeys | Export-Csv -Path "DevicesWithoutBitLockerRecoveryKeys.csv" -NoTypeInformation
