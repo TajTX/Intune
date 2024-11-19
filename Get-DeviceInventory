@@ -1,0 +1,55 @@
+#To retrieve the device inventory for selected properties
+# Microsoft Entra ID Authentication details
+$tenantId = "" #the tenant ID in which the Data Collection Endpoint resides
+$appId = "" #the app ID created and granted permissions
+$appSecret = "" #the secret created for the above app - never store your secrets in the source code
+
+# Function to get the Azure AD token (Bearer token) for Graph API
+$body = @{
+    client_id     = $appId
+    scope         = "https://graph.microsoft.com/.default"
+    client_secret = $appSecret
+    grant_type    = "client_credentials"
+}
+$tokenUri = "https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token"
+$headers = @{"Content-Type" = "application/x-www-form-urlencoded"}
+$bearerToken = (Invoke-RestMethod -Uri $tokenUri -Method Post -Body $body -Headers $headers).access_token
+
+# Graph API request headers with the Bearer token
+$graphHeaders = @{
+    "Authorization" = "Bearer $bearerToken"
+    "Content-Type"  = "application/json"
+}
+
+# Graph API URL for querying Intune managed devices
+$graphUri = "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices"
+
+# Initialize an empty array to hold device data
+$IntuneDevices = @()
+
+# Loop to handle paginated responses from Graph API
+do {
+    # Get the data from the current page
+    $response = Invoke-RestMethod -Uri $graphUri -Method Get -Headers $graphHeaders
+    
+    # Append current page of events to the list
+    $IntuneDevices += $response.value
+    
+    # Check if there's another page to query
+    $graphUri = $response.'@odata.nextLink'
+    
+} while ($graphUri) # Continue until there's no more pages
+
+# Prepare device information for logging, converting each device into a custom object
+$devicesList = $intuneDevices | ForEach-Object {
+    [PSCustomObject]@{
+        id                 = $_.id
+        DeviceName         = $_.deviceName
+        UserPrincipalName  = $_.userPrincipalName
+        ModelFriendlyName  = $_.model
+        DeviceManufacturer = $_.manufacturer
+        OperatingSystem    = $_.operatingSystem
+        ComplianceState    = $_.complianceState
+        LastSyncDateTime   = $_.lastSyncDateTime
+    }
+} | Export-Csv -Path "C:\reports\device_inventory.csv" -NoTypeInformation
