@@ -1,0 +1,21 @@
+# Script to get device names from the given file and execute Restart task from Intune
+# Prompt for the file containing device names
+$deviceNamesFile = Read-Host "Enter the path to the file containing device names"
+Connect-MgGraph -Scopes DeviceManagementManagedDevices.PrivilegedOperations.All
+
+# Check if the file exists
+if (-not (Test-Path -Path $deviceNamesFile)) {
+    Write-Host "File not found. Please provide a valid file path."
+    exit
+}
+
+# Read device names from the file
+$deviceNames = Get-Content -Path $deviceNamesFile
+
+# Iterate through each device name and pass it to the commandlet
+foreach ($deviceName in $deviceNames) {
+    # Call your commandlet here with the current device name
+    Get-MgDeviceManagementManagedDevice -Filter "DeviceName eq '$devicename'" | %{Restart-MgDeviceManagementManagedDeviceNow -ManagedDeviceId $_.Id}
+    # Echo each device name:
+    Write-Host "Processing device: $deviceName"
+}
