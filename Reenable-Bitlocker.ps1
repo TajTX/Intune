@@ -1,3 +1,9 @@
+<#
+DISCLAIMER:
+This script is provided "as is" without warranty of any kind, express or implied. Use this script at your own risk.
+The author and contributors are not responsible for any damage or issues potentially caused by the use of this script.
+Always test scripts in a non-production environment before deploying them into a production setting.
+#>
 # This script checks the current encryption method of the device. If the device is not encrypted or is encrypted with a method other than XTS-AES-256, it will decrypt the drive and then re-encrypt it using XTS-AES-256
 # Check if BitLocker is enabled and if the encryption method is XTS-AES-256
 if ($BitLockerStatus.ProtectionStatus -eq 'On' -and $BitLockerStatus.EncryptionMethod -eq 'XTSAES256')
