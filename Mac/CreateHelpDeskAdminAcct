@@ -1,0 +1,34 @@
+#!/bin/bash
+
+# Redirect output to a log file for troubleshooting
+exec > /var/tmp/helpdesk_admin_creation.log 2>&1
+echo "$(date): Starting Helpdesk Admin creation script..."
+
+# Configurable variables
+USERNAME="helpdeskadmin"
+FULLNAME="Helpdesk Admin"
+ENCODED_PASS="VGVtcFBhJCR3MHJk" # "TempPa$$w0rd" without newline
+
+# Decode the password
+PASSWORD=$(echo "$ENCODED_PASS" | base64 --decode | tr -d '\n')
+
+# Check if user already exists
+if id "$USERNAME" &>/dev/null; then
+    echo "$(date): User '$USERNAME' already exists. Skipping creation."
+    exit 0
+fi
+
+# Create the user silently
+/usr/sbin/sysadminctl -addUser "$USERNAME" -fullName "$FULLNAME" -password "$PASSWORD" -admin
+
+# Double-check and explicitly add to admin group (for redundancy)
+/usr/sbin/dseditgroup -o edit -a "$USERNAME" -t user admin
+if [ $? -eq 0 ]; then
+    echo "$(date): User '$USERNAME' added to admin group."
+else
+    echo "$(date): Failed to add user to admin group."
+    exit 1
+fi
+
+echo "$(date): Admin account '$USERNAME' created successfully."
+exit 0
