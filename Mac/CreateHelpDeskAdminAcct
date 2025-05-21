@@ -1,5 +1,6 @@
 #!/bin/bash
-
+# This script creates a new local administrator account on a macOS device. It silently adds the user with a specified username, full name, and password (base64-encoded for obfuscation), and ensures the user is a member of the admin group. 
+# The script also logs all actions for troubleshooting and verification purposes.
 # Redirect output to a log file for troubleshooting
 exec > /var/tmp/helpdesk_admin_creation.log 2>&1
 echo "$(date): Starting Helpdesk Admin creation script..."
