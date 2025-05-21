@@ -1,0 +1,30 @@
+#!/bin/bash
+# This script deletes a specified local user account from a macOS device. It removes the user account, and optionally deletes the associated home directory if it exists. 
+# It includes logging for traceability and is intended for cleanup of temporary or support admin accounts.
+# Redirect output to a log file for troubleshooting (optional but useful)
+exec > /var/tmp/delete_local_admin.log 2>&1
+echo "$(date): Starting local admin deletion script..."
+
+# Define the username of the account to delete
+username="helpdeskadmin4"  # Change this as needed
+
+# Check if the user exists
+if id "$username" &>/dev/null; then
+    echo "$(date): Deleting user account: $username"
+    
+    # Delete the user account without keeping the home directory
+    /usr/sbin/sysadminctl -deleteUser "$username"
+    echo "$(date): User account deleted successfully."
+
+    # Optional: Manually delete home directory if it still exists
+    homeDir="/Users/$username"
+    if [ -d "$homeDir" ]; then
+        echo "$(date): Deleting user home directory: $homeDir"
+        rm -rf "$homeDir"
+        echo "$(date): Home directory deleted successfully."
+    fi
+else
+    echo "$(date): User account $username not found. Nothing to do."
+fi
+
+exit 0
