@@ -1,0 +1,102 @@
+<#
+.SYNOPSIS
+  Assigns a Group Tag to Autopilot devices based on a list of Intune device names.
+
+.DESCRIPTION
+  - Reads device names from a text file.
+  - Queries Intune managed devices to get serial numbers.
+  - Matches those serial numbers against Autopilot devices.
+  - Updates the Group Tag using Graph API.
+  - Exports a report to CSV.
+#>
+
+# ==== CONFIGURATION ====
+$DeviceList = "C:\Temp\DeviceNames.txt"       # Input file (one device name per line)
+$GroupTag   = "MyCustomGroupTag"              # New Group Tag
+$ReportFile = "C:\Temp\AutopilotGroupTagReport.csv"
+
+# ==== AUTH ====
+Connect-MgGraph -Scopes "DeviceManagementManagedDevices.Read.All","DeviceManagementServiceConfig.ReadWrite.All"
+
+# ==== PRELOAD AUTOPILOT DEVICES ====
+Write-Host "Fetching all Autopilot devices..." -ForegroundColor Cyan
+$allAutopilotDevices = Get-MgDeviceManagementWindowsAutopilotDeviceIdentity -All
+Write-Host "Total Autopilot devices found: $($allAutopilotDevices.Count)" -ForegroundColor Green
+
+# ==== PREPARE REPORT ====
+$Report = @()
+
+# ==== PROCESS DEVICES ====
+$DeviceNames = Get-Content $DeviceList
+
+foreach ($deviceName in $DeviceNames) {
+    Write-Host "`nProcessing device: $deviceName" -ForegroundColor Yellow
+
+    try {
+        # Step 1: Get Managed Device from Intune
+        $managedDevice = Get-MgDeviceManagementManagedDevice -Filter "deviceName eq '$deviceName'"
+
+        if (-not $managedDevice) {
+            Write-Warning "Device $deviceName not found in Intune managed devices."
+            $Report += [pscustomobject]@{
+                DeviceName   = $deviceName
+                SerialNumber = ""
+                OldGroupTag  = ""
+                NewGroupTag  = $GroupTag
+                Status       = "Not found in Intune"
+            }
+            continue
+        }
+
+        $serialNumber = $managedDevice.serialNumber
+        Write-Host "  Found Intune device with Serial: $serialNumber" -ForegroundColor Green
+
+        # Step 2: Match Autopilot Device by Serial
+        $autopilotDevice = $allAutopilotDevices | Where-Object { $_.serialNumber -eq $serialNumber }
+
+        if (-not $autopilotDevice) {
+            Write-Warning "No Autopilot record found for device $deviceName (Serial $serialNumber)."
+            $Report += [pscustomobject]@{
+                DeviceName   = $deviceName
+                SerialNumber = $serialNumber
+                OldGroupTag  = ""
+                NewGroupTag  = $GroupTag
+                Status       = "No Autopilot record"
+            }
+            continue
+        }
+
+        $autopilotId = $autopilotDevice.Id
+        $oldTag      = $autopilotDevice.groupTag
+
+        # Step 3: Update Group Tag (via Graph API action)
+        $uri  = "https://graph.microsoft.com/beta/deviceManagement/windowsAutopilotDeviceIdentities/$autopilotId/updateDeviceProperties"
+        $body = @{ groupTag = $GroupTag } | ConvertTo-Json -Depth 3
+        Invoke-MgGraphRequest -Method POST -Uri $uri -Body $body -ContentType "application/json"
+
+        Write-Host " => Group Tag updated from '$oldTag' to '$GroupTag'" -ForegroundColor Cyan
+
+        # Step 4: Add to Report
+        $Report += [pscustomobject]@{
+            DeviceName   = $deviceName
+            SerialNumber = $serialNumber
+            OldGroupTag  = $oldTag
+            NewGroupTag  = $GroupTag
+            Status       = "Updated"
+        }
+    }
+    catch {
+        Write-Warning "Error processing $deviceName : $_"
+        $Report += [pscustomobject]@{
+            DeviceName   = $deviceName
+            SerialNumber = ""
+            OldGroupTag  = ""
+            NewGroupTag  = $GroupTag
+            Status       = "Error: $($_.Exception.Message)"
+        }
+    }
+}
+
+# ==== EXPORT REPORT ====
+$Report | Export-Csv -Path $ReportFile -NoTypeInformation -Encoding UTF8
+Write-Host "`nReport exported to $ReportFile" -ForegroundColor Magenta
