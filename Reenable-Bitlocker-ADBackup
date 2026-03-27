@@ -1,0 +1,129 @@
+<#
+DISCLAIMER:
+This script is provided "as is" without warranty of any kind, express or implied.
+#>
+
+$Mount = "C:"
+$LogDir = "$env:ProgramData\BitLocker"
+$LogFile = Join-Path $LogDir "Reenable-BitLocker.log"
+New-Item -Path $LogDir -ItemType Directory -Force | Out-Null
+
+function Log($msg) {
+    $stamp = (Get-Date).ToString("s")
+    "$stamp  $msg" | Out-File -FilePath $LogFile -Append -Encoding utf8
+}
+
+# Attempts to back up the RecoveryPassword protector to AD DS.
+# If not domain-joined, logs that it is skipping (expected behavior).
+function Backup-RecoveryPasswordToAD([string]$MountPoint) {
+    Log "Backup-RecoveryPasswordToAD invoked."
+
+    # Domain join check (if not domain joined, AD DS backup cannot work)
+    $cs = Get-CimInstance Win32_ComputerSystem
+    if (-not $cs.PartOfDomain) {
+        Log "Skipping AD backup: device is not domain-joined."
+        return
+    }
+
+    try {
+        $blLocal = Get-BitLockerVolume -MountPoint $MountPoint
+        $rp = $blLocal.KeyProtector | Where-Object { $_.KeyProtectorType -eq "RecoveryPassword" }
+
+        if (-not $rp) {
+            Log "No RecoveryPassword protector found to back up."
+            return
+        }
+
+        foreach ($kp in $rp) {
+            try {
+                Log "Attempting AD backup (KeyProtectorId=$($kp.KeyProtectorId))"
+                Backup-BitLockerKeyProtector -MountPoint $MountPoint -KeyProtectorId $kp.KeyProtectorId
+                Log "AD backup succeeded (KeyProtectorId=$($kp.KeyProtectorId))"
+            } catch {
+                Log "ERROR: AD backup failed (KeyProtectorId=$($kp.KeyProtectorId)). $_"
+            }
+        }
+    } catch {
+        Log "ERROR: Backup-RecoveryPasswordToAD failed. $_"
+    }
+}
+
+try {
+    $bl = Get-BitLockerVolume -MountPoint $Mount
+} catch {
+    Log "ERROR: Get-BitLockerVolume failed. $_"
+    exit 1
+}
+
+Log "State: VolumeStatus=$($bl.VolumeStatus) ProtectionStatus=$($bl.ProtectionStatus) EncryptionMethod=$($bl.EncryptionMethod) Encryption%=$($bl.EncryptionPercentage)"
+
+# 1) If an operation is already running, don't interfere
+if ($bl.VolumeStatus -in @("EncryptionInProgress","DecryptionInProgress")) {
+    Log "No action: BitLocker operation already in progress ($($bl.VolumeStatus))."
+    exit 0
+}
+
+# 2) If already compliant, (optional) attempt backup and exit
+if ($bl.VolumeStatus -eq "FullyEncrypted" -and $bl.EncryptionMethod -eq "XtsAes256" -and $bl.ProtectionStatus -eq 1) {
+    Log "No action: FullyEncrypted + XtsAes256 + Protection On."
+    Backup-RecoveryPasswordToAD -MountPoint $Mount
+    exit 0
+}
+
+# 3) Ensure TPM is ready before attempting TPM protector enablement
+$tpm = Get-Tpm
+if (-not $tpm.TpmPresent -or -not $tpm.TpmReady) {
+    Log "ERROR: TPM not present/ready. Cannot enforce TPM protector."
+    exit 2
+}
+
+# Helper: ensure recovery password protector exists (do not delete existing protectors)
+function Ensure-RecoveryPasswordProtector($blObj) {
+    $hasRecoveryPw = $blObj.KeyProtector | Where-Object { $_.KeyProtectorType -eq "RecoveryPassword" }
+    if (-not $hasRecoveryPw) {
+        Log "Adding RecoveryPassword protector."
+        Add-BitLockerKeyProtector -MountPoint $Mount -RecoveryPasswordProtector | Out-Null
+        Log "RecoveryPassword protector added."
+    } else {
+        Log "RecoveryPassword protector already present."
+    }
+}
+
+# 4) If fully encrypted but wrong encryption method -> start decryption and exit
+if ($bl.VolumeStatus -eq "FullyEncrypted" -and $bl.EncryptionMethod -ne "XtsAes256") {
+    Log "Starting decryption (current method=$($bl.EncryptionMethod)) so next run can re-encrypt with XtsAes256."
+    Disable-BitLocker -MountPoint $Mount
+    exit 0
+}
+
+# 5) If fully decrypted -> enable BitLocker with XtsAes256 + TPM protector and exit
+if ($bl.VolumeStatus -eq "FullyDecrypted") {
+    Ensure-RecoveryPasswordProtector -blObj $bl
+
+    # Log attempt to back up (will skip if not domain-joined)
+    Backup-RecoveryPasswordToAD -MountPoint $Mount
+
+    Log "Enabling BitLocker with XtsAes256 + TPM protector."
+    Enable-BitLocker -MountPoint $Mount -EncryptionMethod XtsAes256 -TpmProtector -SkipHardwareTest
+
+    # Try backup again after enablement (best-effort)
+    Backup-RecoveryPasswordToAD -MountPoint $Mount
+
+    exit 0
+}
+
+# 6) If encrypted but protection is off, resume protection
+if ($bl.VolumeStatus -eq "FullyEncrypted" -and $bl.ProtectionStatus -eq 0) {
+    Log "Protection is Off while encrypted. Attempting Resume-BitLocker."
+    Resume-BitLocker -MountPoint $Mount
+
+    # Best-effort backup
+    Backup-RecoveryPasswordToAD -MountPoint $Mount
+
+    exit 0
+}
+
+# 7) Catch-all
+Backup-RecoveryPasswordToAD -MountPoint $Mount
+Log "No direct action taken for current state."
+exit 0
