@@ -1,6 +1,8 @@
 <#
 DISCLAIMER:
-This script is provided "as is" without warranty of any kind, express or implied.
+This script is provided "as is" without warranty of any kind, express or implied. Use this script at your own risk.
+The author and contributors are not responsible for any damage or issues potentially caused by the use of this script.
+Always test scripts in a non-production environment before deploying them into a production setting.
 #>
 
 $Mount = "C:"
