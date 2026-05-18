@@ -5,10 +5,9 @@ The author and contributors are not responsible for any damage or issues potenti
 Always test scripts in a non-production environment before deploying them into a production setting.
 #>
 <#
-This script connects to Microsoft Graph and retrieves all iOS/iPadOS apps from Intune. It exports the app list to a CSV file and identifies apps that are not currently assigned. 
-For each unassigned app, it creates two security groups in Entra ID—one user group and one device group based on the app name. 
-It then assigns the app to the user group as “Available” and to the device group as “Required,” applying appropriate Intune iOS assignment settings for each app type. 
-The script also handles different iOS app types and ensures only valid Graph-supported properties are used during assignment.
+This script connects to Microsoft Graph and retrieves all iOS/iPadOS apps from Intune. 
+It identifies apps without assignments by validating each app’s assignment status, exports the unassigned apps to a CSV file for review, and prompts the administrator for confirmation before proceeding. 
+Once approved, the script creates user and device Entra ID security groups for each unassigned app and assigns the apps in Intune using the appropriate iOS assignment settings based on the app type.
 #>
 ############################################################
 # CONNECT TO GRAPH
@@ -22,7 +21,7 @@ Connect-MgGraph -Scopes `
 # OUTPUT PATH
 ############################################################
 
-$ExportPath = "C:\Temp\IntuneiOSApps.csv"
+$ExportPath = "C:\Temp\Unassigned-iOSApps.csv"
 
 ############################################################
 # GET ALL MOBILE APPS
@@ -41,30 +40,64 @@ $iOSApps = $Apps | Where-Object {
     $_.'@odata.type' -match "ios"
 }
 
-Write-Host "iOS apps found: $($iOSApps.Count)" -ForegroundColor Green
+Write-Host "Total iOS apps found: $($iOSApps.Count)" -ForegroundColor Green
 
 ############################################################
-# EXPORT CSV (FIXED)
+# DETERMINE TRUE UNASSIGNED APPS
 ############################################################
 
-$iOSApps | ForEach-Object {
+$UnassignedApps = @()
+
+foreach ($App in $iOSApps) {
+
+    try {
+
+        $Assignments = (Invoke-MgGraphRequest -Method GET `
+            -Uri "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$($App.id)/assignments").value
+
+        if (-not $Assignments -or $Assignments.Count -eq 0) {
+
+            $UnassignedApps += $App
+        }
+    }
+    catch {
+
+        Write-Host "Failed assignment lookup: $($App.displayName)" -ForegroundColor Red
+    }
+}
+
+Write-Host "Unassigned apps found: $($UnassignedApps.Count)" -ForegroundColor Yellow
+
+############################################################
+# EXPORT CSV
+############################################################
+
+$UnassignedApps | ForEach-Object {
+
     [PSCustomObject]@{
         DisplayName = $_.displayName
         Id          = $_.id
         AppType     = $_.'@odata.type'
-        IsAssigned  = $_.isAssigned
     }
+
 } | Export-Csv $ExportPath -NoTypeInformation
 
-Write-Host "CSV exported to $ExportPath" -ForegroundColor Green
+Write-Host "CSV exported to: $ExportPath" -ForegroundColor Green
 
 ############################################################
-# FILTER UNASSIGNED APPS
+# USER CONFIRMATION
 ############################################################
 
-$UnassignedApps = $iOSApps | Where-Object { $_.isAssigned -eq $false }
+Write-Host ""
+Write-Host "Review the CSV before continuing." -ForegroundColor Cyan
 
-Write-Host "Unassigned apps: $($UnassignedApps.Count)" -ForegroundColor Yellow
+$Proceed = Read-Host "Do you want to continue with group creation and app assignments? (Y/N)"
+
+if ($Proceed -ne "Y" -and $Proceed -ne "y") {
+
+    Write-Host "Operation cancelled by user." -ForegroundColor Yellow
+    return
+}
 
 ############################################################
 # PROCESS EACH APP
@@ -75,31 +108,62 @@ foreach ($App in $UnassignedApps) {
     Write-Host "`nProcessing: $($App.displayName)" -ForegroundColor Cyan
 
     try {
+
         ########################################################
-        # CREATE GROUP NAMES
+        # SAFE GROUP NAME
         ########################################################
 
-        $SafeName = $App.displayName -replace '[\\\/\:\*\?\"\<\>\|]', '' -replace '\s+', ' '
+        $SafeName = $App.displayName `
+            -replace '[\\\/\:\*\?\"\<\>\|]', '' `
+            -replace '\s+', ' '
 
         $UserGroupName   = "Intune App $SafeName User"
         $DeviceGroupName = "Intune App $SafeName Device"
 
         ########################################################
-        # CREATE GROUPS
+        # CHECK IF GROUPS EXIST
         ########################################################
 
-        $UserGroup = New-MgGroup -DisplayName $UserGroupName `
-            -MailEnabled:$false `
-            -MailNickname ($UserGroupName -replace ' ','') `
-            -SecurityEnabled:$true
+        $ExistingUserGroup = Get-MgGroup `
+            -Filter "displayName eq '$UserGroupName'"
 
-        $DeviceGroup = New-MgGroup -DisplayName $DeviceGroupName `
-            -MailEnabled:$false `
-            -MailNickname ($DeviceGroupName -replace ' ','') `
-            -SecurityEnabled:$true
+        if (-not $ExistingUserGroup) {
+
+            Write-Host "Creating User Group..." -ForegroundColor Gray
+
+            $UserGroup = New-MgGroup `
+                -DisplayName $UserGroupName `
+                -MailEnabled:$false `
+                -MailNickname ($UserGroupName -replace ' ','') `
+                -SecurityEnabled:$true
+        }
+        else {
+
+            Write-Host "User Group already exists." -ForegroundColor Yellow
+            $UserGroup = $ExistingUserGroup
+        }
+
+        $ExistingDeviceGroup = Get-MgGroup `
+            -Filter "displayName eq '$DeviceGroupName'"
+
+        if (-not $ExistingDeviceGroup) {
+
+            Write-Host "Creating Device Group..." -ForegroundColor Gray
+
+            $DeviceGroup = New-MgGroup `
+                -DisplayName $DeviceGroupName `
+                -MailEnabled:$false `
+                -MailNickname ($DeviceGroupName -replace ' ','') `
+                -SecurityEnabled:$true
+        }
+        else {
+
+            Write-Host "Device Group already exists." -ForegroundColor Yellow
+            $DeviceGroup = $ExistingDeviceGroup
+        }
 
         ########################################################
-        # DETERMINE SETTINGS TYPE (IMPORTANT FIX)
+        # DETERMINE SETTINGS TYPE
         ########################################################
 
         switch ($App.'@odata.type') {
@@ -114,13 +178,13 @@ foreach ($App in $UnassignedApps) {
         }
 
         ########################################################
-        # BUILD ASSIGNMENTS (CLEAN + VALID)
+        # BUILD ASSIGNMENT BODY
         ########################################################
 
         $Body = @{
             mobileAppAssignments = @(
-                
-                # USER - Available
+
+                # USER ASSIGNMENT
                 @{
                     "@odata.type" = "#microsoft.graph.mobileAppAssignment"
                     intent = "available"
@@ -136,7 +200,7 @@ foreach ($App in $UnassignedApps) {
                     }
                 },
 
-                # DEVICE - Required
+                # DEVICE ASSIGNMENT
                 @{
                     "@odata.type" = "#microsoft.graph.mobileAppAssignment"
                     intent = "required"
@@ -161,17 +225,20 @@ foreach ($App in $UnassignedApps) {
 
         $Uri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$($App.id)/assign"
 
-        Invoke-MgGraphRequest -Method POST `
+        Invoke-MgGraphRequest `
+            -Method POST `
             -Uri $Uri `
             -Body ($Body | ConvertTo-Json -Depth 20) `
             -ContentType "application/json"
 
-        Write-Host "Success: $($App.displayName)" -ForegroundColor Green
+        Write-Host "Assignment successful: $($App.displayName)" -ForegroundColor Green
     }
     catch {
+
         Write-Host "FAILED: $($App.displayName)" -ForegroundColor Red
         Write-Host $_.Exception.Message -ForegroundColor Yellow
     }
 }
 
-Write-Host "`nCompleted processing all apps." -ForegroundColor Green
+Write-Host ""
+Write-Host "Completed processing all apps." -ForegroundColor Green
