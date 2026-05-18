@@ -18,8 +18,6 @@ Connect-MgGraph -Scopes `
 "DeviceManagementApps.ReadWrite.All",
 "Group.ReadWrite.All"
 
-Select-MgProfile beta
-
 ############################################################
 # OUTPUT PATH
 ############################################################
